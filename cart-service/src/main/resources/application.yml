@@ -1,0 +1,71 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: cart-service
+  profiles:
+    active: dev
+  main:
+    allow-circular-references: true
+  cloud:
+    nacos:
+      server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
+      config:
+        file-extension: yml
+        group: DEFAULT_GROUP
+        refresh-enabled: true
+
+# ============================================================
+# 以下配置已迁移至 application-dev.yml（Nacos / 本地）
+# 开源使用时请根据下方模板填写您的实际值
+# ============================================================
+#
+# spring:
+#   datasource:
+#     driver-class-name: com.mysql.cj.jdbc.Driver
+#     url: jdbc:mysql://<your-host>:3306/<your-database>?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&useSSL=false&allowPublicKeyRetrieval=true
+#     username: <your-username>
+#     password: <your-password>
+#   data:
+#     redis:
+#       host: <your-redis-host>
+#       port: 6379
+#       password: <your-redis-password>
+#       database: 1
+#
+# sky:
+#   jwt:
+#     admin-secret-key: <your-admin-jwt-secret>    # 管理端 JWT 签名密钥（256位）
+#     admin-ttl: 604800000                         # 管理端 Token 过期时间（毫秒）
+#     admin-token-name: Token                      # 管理端 Token 请求头名称
+#     user-secret-key: <your-user-jwt-secret>      # 用户端 JWT 签名密钥（256位）
+#     user-ttl: 604800000                          # 用户端 Token 过期时间（毫秒）
+#     user-token-name: Authentication              # 用户端 Token 请求头名称
+#
+#   alioss:
+#     endpoint: <your-oss-endpoint>                # OSS 地域节点
+#     access-key-id: <your-access-key-id>          # AccessKey ID
+#     access-key-secret: <your-access-key-secret>  # AccessKey Secret
+#     bucket-name: <your-bucket-name>              # Bucket 名称
+#
+#   wechat:
+#     appid: <your-wechat-appid>                   # 微信小程序 AppID
+#     secret: <your-wechat-secret>                 # 微信小程序 Secret
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.sky.entity
+  global-config:
+    db-config:
+      id-type: auto
+  configuration:
+    map-underscore-to-camel-case: true
+
+logging:
+  level:
+    com:
+      sky:
+        mapper: debug
+        service: info
+        controller: info

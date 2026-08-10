@@ -1,0 +1,148 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: gateway
+  profiles:
+    active: dev
+  cloud:
+    nacos:
+      server-addr: ${NACOS_SERVER_ADDR:localhost:8848}
+      config:
+        file-extension: yml
+        group: DEFAULT_GROUP
+        refresh-enabled: true
+    gateway:
+      default-filters:
+        - name: RemoveRequestHeader
+          args:
+            name: X-Forwarded-For
+      filter:
+        - name: CustomForwardedHeadersFilter
+      routes:
+        - id: cart-service-shoppingCart
+          uri: lb://cart-service
+          predicates:
+            - Path=/user/shoppingCart/**
+
+        - id: cart-service-user-shop
+          uri: lb://cart-service
+          predicates:
+            - Path=/user/shop/**
+
+        - id: cart-service-admin-shop
+          uri: lb://cart-service
+          predicates:
+            - Path=/admin/shop/**
+
+        - id: order-service-user
+          uri: lb://order-service
+          predicates:
+            - Path=/user/order/**
+
+        - id: order-service-admin
+          uri: lb://order-service
+          predicates:
+            - Path=/admin/order/**
+
+        - id: product-service-user-dish
+          uri: lb://product-service
+          predicates:
+            - Path=/user/dish/**
+
+        - id: product-service-user-setmeal
+          uri: lb://product-service
+          predicates:
+            - Path=/user/setmeal/**
+
+        - id: product-service-user-category
+          uri: lb://product-service
+          predicates:
+            - Path=/user/category/**
+
+        - id: product-service-admin-dish
+          uri: lb://product-service
+          predicates:
+            - Path=/admin/dish/**
+
+        - id: product-service-admin-setmeal
+          uri: lb://product-service
+          predicates:
+            - Path=/admin/setmeal/**
+
+        - id: product-service-admin-category
+          uri: lb://product-service
+          predicates:
+            - Path=/admin/category/**
+
+        - id: product-service-admin-common
+          uri: lb://product-service
+          predicates:
+            - Path=/admin/common/**
+
+        - id: product-service-common-upload
+          uri: lb://product-service
+          predicates:
+            - Path=/common/upload/**
+
+        - id: product-service-user-dish-review
+          uri: lb://product-service
+          predicates:
+            - Path=/user/dish-review/**
+
+        - id: product-service-admin-dish-review
+          uri: lb://product-service
+          predicates:
+            - Path=/admin/dish-review/**
+
+        - id: user-service-user
+          uri: lb://user-service
+          predicates:
+            - Path=/user/user/**
+
+        - id: user-service-addressbook
+          uri: lb://user-service
+          predicates:
+            - Path=/user/addressBook/**
+
+        - id: user-service-user-merchant
+          uri: lb://user-service
+          predicates:
+            - Path=/user/merchant/**
+
+        - id: user-service-admin-employee
+          uri: lb://user-service
+          predicates:
+            - Path=/admin/employee/**
+
+        - id: user-service-admin-merchant
+          uri: lb://user-service
+          predicates:
+            - Path=/admin/merchant/**
+
+        - id: user-service-admin-report
+          uri: lb://user-service
+          predicates:
+            - Path=/admin/report/**
+
+        - id: chat-ai
+          uri: lb://chat-ai
+          predicates:
+            - Path=/api/**
+
+        - id: order-service-websocket
+          uri: lb://order-service
+          predicates:
+            - Path=/ws/**
+
+# ============================================================
+# 网关路由与日志配置保留在本地（普通配置不入 Nacos）
+# JWT 校验密钥等敏感配置由 Nacos gateway-dev.yml 提供，
+# 本地 application-dev.yml 仅保留无密钥模板。
+# ============================================================
+
+logging:
+  level:
+    root: info
+    com.zyj.gateway.filters: debug
