@@ -47,7 +47,6 @@ public class WorkSpaceServiceImpl implements WorkSpaceService {
      */
     @Override
     public BusinessDataVO getBusinessData(LocalDateTime begin, LocalDateTime end) {
-        Employee currentEmployee = getCurrentEmployee();
         /**
          * 营业额：当日已完成订单的总金额
          * 有效订单：当日已完成订单的数量
@@ -58,12 +57,6 @@ public class WorkSpaceServiceImpl implements WorkSpaceService {
         Map map = new HashMap();
         map.put("begin", begin);
         map.put("end", end);
-        // [TENANT-PLUGIN] merchant_id 过滤已由 order-service 的 TenantLineInnerInterceptor 自动处理，测试通过后删除
-        // if (currentEmployee.getMerchantId() == null && currentEmployee.getRole() == 0){
-        //     map.put("merchantId", null);
-        // }else {
-        //     map.put("merchantId", currentEmployee.getMerchantId());
-        // }
         //1.查询订单总数
         Integer totalOrderCount = (Integer) orderClient.countByMap(map).getData();
         map.put("status", Orders.COMPLETED);
@@ -97,17 +90,10 @@ public class WorkSpaceServiceImpl implements WorkSpaceService {
      */
     @Override
     public OrderOverViewVO getOrderOverView() {
-        Employee currentEmployee = getCurrentEmployee();
         /**
          * 全部订单 待接单 待派送 已完成 已取消
          */
         Map map = new HashMap();
-        // [TENANT-PLUGIN] merchant_id 过滤已由 order-service 的 TenantLineInnerInterceptor 自动处理，测试通过后删除
-        // if (currentEmployee.getMerchantId() == null && currentEmployee.getRole() == 0){
-        //     map.put("merchantId", null);
-        // }else {
-        //     map.put("merchantId", currentEmployee.getMerchantId());
-        // }
         map.put("begin", LocalDateTime.now().with(LocalTime.MIN));
         Integer allOrders = (Integer) orderClient.countByMap(map).getData();
         map.put("status", Orders.TO_BE_CONFIRMED);

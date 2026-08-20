@@ -55,8 +55,6 @@
             <if test="begin != null">and order_time &gt; #{begin}</if>
             <if test="end != null">and order_time &lt; #{end}</if>
             <if test="status != null">and status = #{status}</if>
-            <!-- [TENANT-PLUGIN] 已由 TenantLineInnerInterceptor 自动处理，测试通过后删除 -->
-            <!-- <if test="merchantId != null">and merchant_id = #{merchantId}</if> -->
         </where>
     </select>
     <select id="pageOrders" resultType="com.sky.entity.Orders">
@@ -68,8 +66,6 @@
             <if test="number != null and number != ''">and number like concat('%',#{number},'%')</if>
             <if test="beginTime != null">AND order_time >= #{beginTime}</if>
             <if test="endTime != null">AND order_time &lt;= #{endTime}</if>
-            <!-- [TENANT-PLUGIN] 已由 TenantLineInnerInterceptor 自动处理，测试通过后删除 -->
-            <!-- <if test="merchantId != null">and merchant_id = #{merchantId}</if> -->
         </where>
         order by order_time
     </select>
@@ -79,8 +75,6 @@
             <if test="begin != null">and order_time &gt; #{begin}</if>
             <if test="end != null">and order_time &lt; #{end}</if>
             <if test="status != null">and status = #{status}</if>
-            <!-- [TENANT-PLUGIN] 已由 TenantLineInnerInterceptor 自动处理，测试通过后删除 -->
-            <!-- <if test="merchantId != null">and merchant_id = #{merchantId}</if> -->
         </where>
     </select>
     <select id="getSalesTop10" resultType="com.sky.dto.GoodsSalesDTO">
@@ -89,8 +83,6 @@
             o.id = od.order_id and o.status = 5
             <if test="begin != null">and o.order_time >= #{begin}</if>
             <if test="end != null">and o.order_time &lt;= #{end}</if>
-            <!-- [TENANT-PLUGIN] 已由 TenantLineInnerInterceptor 自动处理，测试通过后删除 -->
-            <!-- <if test="merchantId != null">and o.merchant_id = #{merchantId}</if> -->
         </where>
         group by od.name order by number desc limit 10
     </select>

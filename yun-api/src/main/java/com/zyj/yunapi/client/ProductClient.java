@@ -41,12 +41,12 @@ public interface ProductClient {
     /**
      * 统计菜品状态
      */
-    @GetMapping("/status")
+    @GetMapping("admin/dish/status")
     Result<Integer> countStatusDish(Integer status) ;
     /**
      * 统计菜品状态
      */
-    @GetMapping("/status")
+    @GetMapping("admin/setmeal/status")
     Result<Integer> countStatusSetmeal(Integer status) ;
 
 
@@ -55,5 +55,5 @@ public interface ProductClient {
     Result<List<DishVO>> search(@RequestParam String keyword, @RequestParam Long merchantId);
     //模糊查询套餐
     @GetMapping("/user/setmeal/search")
-    Result<List<SetmealVO>> searchSetmeal(@RequestParam String keyword, @RequestParam Long merchantId);
+    Result<List<SetmealVO>> searchSetmeal(@RequestParam String name, @RequestParam Long categoryId, @RequestParam Long merchantId);
 }

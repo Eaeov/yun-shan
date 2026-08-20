@@ -1,9 +1,11 @@
-package com.zyj.productservice.config;
+package com.sky.config;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;
 import org.redisson.config.Config;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
@@ -11,23 +13,17 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 
 /**
- * @Author：zyj
- * @Package：com.zyj.productservice.config
- * @Project：yun-shan
- * @name：RedisConfiguration
- * @Date：08 12月 2025  16:04
- * @Filename：RedisConfiguration
+ * 统一 Redis 配置（下沉至 yun-common，解决跨服务序列化不一致问题）
+ * 所有服务共用同一套 RedisTemplate 配置，确保 key 序列化方式一致
  */
-/// 创建RedisTemplate对象
 @Configuration
+@ConditionalOnClass(RedisTemplate.class)
 public class RedisConfiguration {
 
     @Bean
-    public RedisTemplate redisTemplate(RedisConnectionFactory redisConnectionFactory){
+    public RedisTemplate redisTemplate(RedisConnectionFactory redisConnectionFactory) {
         RedisTemplate redisTemplate = new RedisTemplate();
-        //设置redis的连接工厂对象
         redisTemplate.setConnectionFactory(redisConnectionFactory);
-        //设置redis的序列化器
         redisTemplate.setKeySerializer(new StringRedisSerializer());
         return redisTemplate;
     }
@@ -44,7 +40,13 @@ public class RedisConfiguration {
     @Value("${spring.data.redis.database}")
     private int database;
 
-    @Bean
+    /**
+     * RedissonClient：仅供引入 redisson-spring-boot-starter 的服务（product-service）使用。
+     * @ConditionalOnMissingBean 避免与 starter 自带的自动配置重复注册导致 bean 冲突。
+     */
+    @Bean(destroyMethod = "shutdown")
+    @ConditionalOnClass(Redisson.class)
+    @ConditionalOnMissingBean(RedissonClient.class)
     public RedissonClient redissonClient() {
         Config config = new Config();
         config.useSingleServer()
@@ -53,5 +55,4 @@ public class RedisConfiguration {
                 .setDatabase(database);
         return Redisson.create(config);
     }
-
 }

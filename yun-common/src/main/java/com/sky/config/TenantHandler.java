@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.extension.plugins.inner.TenantLineInnerIntercept
 import net.sf.jsqlparser.expression.Expression;
 import net.sf.jsqlparser.expression.LongValue;
 import com.sky.context.AuthContext;
+import org.apache.http.client.AuthCache;
+
 import java.util.Set;
 
 /**
@@ -45,36 +47,70 @@ public final class TenantHandler {
     private TenantHandler() {
         // 工具类禁止实例化
     }
-
+    private static boolean shouldIgnoreTable(String tableName) {
+        if(!TENANT_TABLES.contains(tableName)) return true;
+        return AuthContext.getCurrentMerchantId() == null;
+    }
     /**
      * 创建 TenantLineInnerInterceptor 实例
      * 各服务的 MybatisConfig 中调用此方法注册拦截器
+     * 顺序 ignoreTable →（放行了才轮到）getTenantIdColumn → getTenantId
      */
     public static TenantLineInnerInterceptor create() {
         return new TenantLineInnerInterceptor(new TenantLineHandler() {
 
+            // 获得要追加的值
             @Override
             public Expression getTenantId() {
                 Long merchantId = AuthContext.getCurrentMerchantId();
-                // 超管 / C端用户 / 未登录 → 返回 null 真正跳过租户条件
-                // 注意：不能返回 new NullValue()，否则 MyBatis-Plus 会拼接 AND merchant_id = NULL，
-                // 而 SQL 中 = NULL 永远为 UNKNOWN，导致查不到任何数据
+                // 防御性检查：shouldIgnoreTable 已过滤 null 场景
                 if (merchantId == null) {
                     return null;
                 }
-                return new LongValue(merchantId);  // 追加 AND merchant_id = ?
+                return new LongValue(merchantId);
             }
 
+            // 自定义租户ID列名
             @Override
             public String getTenantIdColumn() {
                 return "merchant_id";
             }
-
+            // 先对每张白名单表判断是否需要跳过 然后再走getTenantIdColumn和getTenantId()
             @Override
             public boolean ignoreTable(String tableName) {
                 // 白名单模式：只对 TENANT_TABLES 中的表追加租户条件
-                return !TENANT_TABLES.contains(tableName);
+                return shouldIgnoreTable(tableName);
             }
         });
     }
 }
+/**
+ * 你调用 dishMapper.selectList()
+ *         │
+ *         ▼
+ * ① 拦截器接管，取出 SQL 字符串："SELECT * FROM dish"
+ *         │
+ *         ▼
+ * ② 用 JSqlParser 把 SQL 解析成一棵"语法树"，找出里面出现的所有表
+ *    → 发现 1 张表：dish
+ *         │
+ *         ▼
+ * ③ 对每张表，先问一次：ignoreTable("dish")
+ *    → 走你的 shouldIgnoreTable：
+ *       dish ∈ 白名单? 是 → 再问 AuthContext.getCurrentMerchantId()
+ *       → 当前员工 merchantId = 1001（不是 null）
+ *    → 返回 false  ← 意思是"这张表不要跳过"
+ *         │
+ *         ▼
+ * ④ 既然不跳过，就问你两个信息：
+ *    getTenantIdColumn() → "merchant_id"        （列名）
+ *    getTenantId()       → new LongValue(1001)  （值）
+ *         │
+ *         ▼
+ * ⑤ 拼成条件：merchant_id = 1001
+ *    挂到原 WHERE 后面（没有 WHERE 就新建）：
+ *    SELECT * FROM dish WHERE merchant_id = 1001
+ *         │
+ *         ▼
+ * ⑥ 把改好的 SQL 真正发给数据库
+ */

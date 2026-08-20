@@ -4,7 +4,7 @@
 
 ## 项目概览
 
-**yun-shan（云膳）**是一个基于 Spring Cloud Alibaba 的微服务外卖/餐饮平台。Java 17，Spring Boot 3.2.4，Spring Cloud 2023.0.1，Spring Cloud Alibaba 2023.0.1.0。
+**yun-shan（云山）**是一个基于 Spring Cloud Alibaba 的微服务外卖/餐饮平台。Java 17，Spring Boot 3.2.4，Spring Cloud 2023.0.1，Spring Cloud Alibaba 2023.0.1.0。
 
 ## 构建与运行
 
@@ -19,7 +19,7 @@
 ./mvnw test
 ```
 
-没有 Docker Compose。服务通过 IDE 或 `./mvnw spring-boot:run -pl <模块名>` 单独启动。运行需要的基础设施：MySQL（数据库 `yun_shan`）、Redis、Nacos（地址见 `application.yml` 中 `nacos.server-addr`，默认 `localhost:8848`，可用环境变量 `NACOS_SERVER_ADDR` 覆盖）、RabbitMQ（仅 product-service 需要）。
+没有 Docker Compose。服务通过 IDE 或 `./mvnw spring-boot:run -pl <模块名>` 单独启动。运行需要的基础设施：MySQL（数据库 `yun_shan`）、Redis、Nacos（`192.168.100.128:8848`）、RabbitMQ（仅 product-service 需要）。
 
 ## 模块架构
 
@@ -28,7 +28,7 @@
 ### 共享库（非可执行服务）
 
 - **yun-pojo**（`com.sky`）：实体类（带 `@TableName` 注解）、DTO、VO。纯数据对象，无业务逻辑。最基础的模块——不依赖任何内部模块，被所有其他模块依赖。
-- **yun-common**（`com.sky`）：Result 统一返回包装、JWT 工具类、BaseContext（ThreadLocal\<Long\> 存 userId）、AuthContext（ThreadLocal\<Employee\>，提供 `isSuperAdmin()` 和 `getCurrentMerchantId()` 方法）、JwtProperties、AliOssUtil、WeChatPayUtil、JacksonObjectMapper、业务异常类、常量（JWT claims、网关密钥名 `gatewaySecretKey`、状态码等）以及共享的 `UserInfoInterceptor`。通过 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports` 自动注册——导入此模块即自动为所有服务安装 `UserInfoInterceptor`。
+- **yun-common**（`com.sky`）：Result 统一返回包装、JWT 工具类、BaseContext（ThreadLocal\<Long\> 存 userId）、AuthContext（ThreadLocal\<Employee\>，提供 `isSuperAdmin()` 和 `getCurrentMerchantId()` 方法）、JwtProperties、AliOssUtil、WeChatPayUtil、JacksonObjectMapper、业务异常类、常量（JWT claims、网关密钥 `"220secretKey"`、状态码等）以及共享的 `UserInfoInterceptor`。通过 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports` 自动注册——导入此模块即自动为所有服务安装 `UserInfoInterceptor`。
 - **yun-api**（`com.zyj.yunapi`）：所有 `@FeignClient` 接口和 `FeignConfig`。不是可执行服务（虽然没有 main 类但 POM 中包含 `spring-boot-maven-plugin`）。作为依赖被需要进行服务间调用的模块引入。`FeignConfig` 注册了两个 `RequestInterceptor` bean：一个从当前 HTTP 请求传播 header，另一个在缺少网关密钥时注入默认值。
 
 ### 可执行服务

@@ -42,6 +42,8 @@ public class MybatisConfig {
         TenantLineInnerInterceptor tenantInterceptor = TenantHandler.create();
         interceptor.addInnerInterceptor(tenantInterceptor);
 
+
+
         // 下面可追加其他插件（示例：乐观锁、防全表操作等）
         // interceptor.addInnerInterceptor(乐观锁插件/防全表插件...);
 

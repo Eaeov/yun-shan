@@ -43,16 +43,9 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
      */
     @Override
     public PageResult<Employee> page(EmployeePageQueryDTO dto) {
-        // [TENANT-PLUGIN] resolveMerchantId + .eq(merchantId) 已由 TenantLineInnerInterceptor 自动处理，
-        // 超管仍可通过 dto.getMerchantId() 主动过滤，测试通过后一并删除下面两行注释
-        // Employee emp = getEmp();
-        // Long merchantId = resolveMerchantId(emp, dto.getMerchantId());
-
         Page<Employee> page = new Page<>(dto.getPage(), dto.getPageSize());
         LambdaQueryWrapper<Employee> qw = new LambdaQueryWrapper<>();
         qw.eq(dto.getName() != null && !dto.getName().isEmpty(), Employee::getName, dto.getName());
-        // [TENANT-PLUGIN] .eq(merchantId) 自动过滤已由插件处理，测试通过后删除下行
-        // qw.eq(merchantId != null, Employee::getMerchantId, merchantId);
         qw.orderByDesc(Employee::getCreateTime);
 
         IPage<Employee> iPage = employeeMapper.selectPage(page, qw);
@@ -111,7 +104,10 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     @Override
     public Employee getById(Long id) {
         Employee emp = getEmp();
-        Employee target = super.getById(id);
+        // 必须用 Mapper 自定义 getById（@InterceptorIgnore 跳过租户过滤）：
+        // 超管 merchantId=null，若走 super.getById（selectById）会被租户插件追加
+        // AND merchant_id = null 导致查不到超管自己，报"员工不存在"
+        Employee target = employeeMapper.getById(id);
         if (target == null) {
             throw new BusinessException("员工不存在");
         }
@@ -130,7 +126,7 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     @Override
     public void startOrStop(Integer status, Long id) {
         Employee emp = getEmp();
-        Employee target = super.getById(id);
+        Employee target = employeeMapper.getById(id); // 同上：跳过租户过滤，超管可操作自己
         if (target == null) {
             throw new BusinessException("员工不存在");
         }
@@ -149,7 +145,7 @@ public class EmployeeServiceImpl extends ServiceImpl<EmployeeMapper, Employee> i
     @Override
     public void update(EmployeeDTO dto) {
         Employee emp = getEmp();
-        Employee target = super.getById(dto.getId());
+        Employee target = employeeMapper.getById(dto.getId()); // 同上：跳过租户过滤
         if (target == null) {
             throw new BusinessException("员工不存在");
         }

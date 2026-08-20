@@ -1,5 +1,6 @@
 package com.zyj.cartservice.controller.user;
 
+import com.sky.constant.RedisStatusConstant;
 import com.sky.result.Result;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -23,8 +24,6 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/user/shop")
 public class ShopController {
 
-    public static final String SHOP_STATUS_PREFIX = "shop:status:";
-
     private final RedisTemplate redisTemplate;
 
     /*
@@ -32,9 +31,10 @@ public class ShopController {
      */
     @GetMapping("/{merchantId}/status")
     public Result<Integer> getStatus(@PathVariable Long merchantId){
-        Integer status =(Integer) redisTemplate.opsForValue().get(SHOP_STATUS_PREFIX + merchantId);
+        Integer status =(Integer) redisTemplate.opsForValue().get(RedisStatusConstant.SHOP_STATUS_PREFIX + merchantId);
+        // 改为：null → 营业中
         if (status == null) {
-            status = 0;
+            status = 1;
         }
         log.info("获得商家[{}]店铺状态：{}", merchantId, status == 1 ? "营业中" : "打烊中");
         return Result.success(status);

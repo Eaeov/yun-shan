@@ -1,1 +1,2 @@
 com.sky.config.MvcConfig
+com.sky.config.RedisConfiguration

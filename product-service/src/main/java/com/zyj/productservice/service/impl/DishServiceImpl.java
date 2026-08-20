@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.sky.constant.MessageConstant;
+import com.sky.constant.RedisStatusConstant;
 import com.sky.context.AuthContext;
 import com.sky.dto.DishDTO;
 import com.sky.dto.DishPageQueryDTO;
@@ -15,6 +16,7 @@ import com.sky.entity.DishFlavor;
 import com.sky.exception.BusinessException;
 import com.sky.result.PageResult;
 import com.sky.vo.DishVO;
+import com.zyj.productservice.config.RabbitMQConfig;
 import com.zyj.productservice.mapper.DishFlavorMapper;
 import com.zyj.productservice.mapper.DishMapper;
 import com.zyj.productservice.service.DishService;
@@ -22,10 +24,13 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.BeanUtils;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.*;
 import java.util.concurrent.TimeUnit;
@@ -47,10 +52,10 @@ public class DishServiceImpl extends ServiceImpl<DishMapper,Dish> implements Dis
     private final DishMapper dishMapper;
     private final RedisTemplate redisTemplate;
     private final RedissonClient redissonClient;
+    private final RabbitTemplate rabbitTemplate;
 
     // 缓存key前缀常量
     private static final String DISH_CACHE_PREFIX = "dishCache:";
-    private static final String SHOP_STATUS_PREFIX = "shop:status:"; // 商家状态缓存前缀
     private static final long DISH_CACHE_TTL = 30; // 缓存过期时间（分钟）
 
     @Override
@@ -72,8 +77,8 @@ public class DishServiceImpl extends ServiceImpl<DishMapper,Dish> implements Dis
             dishFlavorMapper.insertBatch(flavors);
         }
 
-        // 【缓存清除】清除对应商家+分类的菜品缓存
-        clearDishCache(merchantId, dishDTO.getCategoryId());
+        // 【MQ缓存清除】事务提交后发送消息，精确删除该分类的菜品缓存
+        afterCommit(() -> sendDishCacheClearMessage(merchantId, dishDTO.getCategoryId()));
     }
 
     @Override
@@ -108,11 +113,13 @@ public class DishServiceImpl extends ServiceImpl<DishMapper,Dish> implements Dis
 
         dishMapper.update(dish);
 
-        // 【缓存清除】清除旧分类和新分类的缓存
-        clearDishCache(newMerchantId, oldDish.getCategoryId());
-        if (!oldDish.getCategoryId().equals(dishDTO.getCategoryId())) {
-            clearDishCache(newMerchantId, dishDTO.getCategoryId());
-        }
+        // 【MQ缓存清除】事务提交后发送消息，精确删除旧分类和新分类的菜品缓存
+        afterCommit(() -> {
+            sendDishCacheClearMessage(newMerchantId, oldDish.getCategoryId());
+            if (!oldDish.getCategoryId().equals(dishDTO.getCategoryId())) {
+                sendDishCacheClearMessage(newMerchantId, dishDTO.getCategoryId());
+            }
+        });
     }
 
     @Override
@@ -129,12 +136,14 @@ public class DishServiceImpl extends ServiceImpl<DishMapper,Dish> implements Dis
         removeByIds(ids);
         dishFlavorMapper.deleteFlavor(ids);
 
-        // 【缓存清除】清除每个菜品的对应分类缓存
-        for (Dish dish : dishes) {
-            if (dish != null) {
-                clearDishCache(dish.getMerchantId(), dish.getCategoryId());
+        // 【MQ缓存清除】事务提交后发送消息，精确删除每个菜品所属分类的缓存
+        afterCommit(() -> {
+            for (Dish dish : dishes) {
+                if (dish != null) {
+                    sendDishCacheClearMessage(dish.getMerchantId(), dish.getCategoryId());
+                }
             }
-        }
+        });
     }
 
     @Override
@@ -157,7 +166,10 @@ public class DishServiceImpl extends ServiceImpl<DishMapper,Dish> implements Dis
 
     @Override
     public PageResult<DishVO> page(DishPageQueryDTO dishPageQueryDTO) {
-        Page<Dish> page = new Page<>(dishPageQueryDTO.getPage(), dishPageQueryDTO.getPageSize());
+        // searchCount=false：关闭分页插件自动 count（其 count SQL 绕过租户插件，total 会返回全平台数量）
+        Page<Dish> page = new Page<>(dishPageQueryDTO.getPage(), dishPageQueryDTO.getPageSize(), false);
+
+        log.info("商家ID：{}", AuthContext.getCurrentMerchantId()); // 打印当前商家ID
 
         QueryWrapper<Dish> queryWrapper = new QueryWrapper<>();
         if(dishPageQueryDTO.getName() != null){
@@ -169,10 +181,15 @@ public class DishServiceImpl extends ServiceImpl<DishMapper,Dish> implements Dis
         if(dishPageQueryDTO.getStatus() != null){
             queryWrapper.eq("status", dishPageQueryDTO.getStatus());
         }
-        // [TENANT-PLUGIN] applyMerchantFilter 已被 TenantLineInnerInterceptor 替代，测试通过后删除
-        // applyMerchantFilter(queryWrapper);
+        // 必须加 ORDER BY，否则 MySQL 的 LIMIT 在无排序时返回结果集不确定，
+        // page=2 时 LIMIT 10,10 可能返回空（导致"第二页无数据"）
+        queryWrapper.orderByDesc("update_time").orderByAsc("id");
 
         IPage<Dish> dishPage = dishMapper.selectPage(page, queryWrapper);
+        // 手动 count：走完整租户过滤链（selectCount 会被 TenantLineInnerInterceptor 追加 merchant_id），
+        // 修正 total 为当前商家自己的菜品数
+        Long total = dishMapper.selectCount(queryWrapper);
+        dishPage.setTotal(total == null ? 0 : total);
         List<DishVO> dishVOList = new ArrayList<>();
         for (Dish dish : dishPage.getRecords()) {
             DishVO dishVO = new DishVO();
@@ -189,13 +206,14 @@ public class DishServiceImpl extends ServiceImpl<DishMapper,Dish> implements Dis
         log.info("根据分类id查询菜品：categoryId={}, merchantId={}", categoryId, merchantId);
         LambdaQueryWrapper<Dish> lambdaQueryWrapper = new LambdaQueryWrapper<>();
         lambdaQueryWrapper.eq(Dish::getCategoryId, categoryId);
-        // [TENANT-PLUGIN] 非超管时 SQL 由 TenantLineInnerInterceptor 自动追加 merchant_id 条件，
-        // 故此处仅当显式传入 merchantId 时才追加（用于 C端用户/Feign 场景）
-        lambdaQueryWrapper.eq(merchantId != null, Dish::getMerchantId, merchantId);
+
+        lambdaQueryWrapper.eq(merchantId != null, Dish::getMerchantId, merchantId)
+                .eq(Dish::getStatus, 1);
         return dishMapper.selectList(lambdaQueryWrapper);
     }
 
     @Override
+    @Transactional
     public void startOrStop(Integer status,Long id) {
         log.info("开始修改菜品状态：{}",id);
         Dish oldDish = dishMapper.getById(id);
@@ -211,8 +229,10 @@ public class DishServiceImpl extends ServiceImpl<DishMapper,Dish> implements Dis
                 .build();
         dishMapper.update(dish);
 
-        // 【缓存清除】清除对应缓存
-        clearDishCache(oldDish.getMerchantId(), oldDish.getCategoryId());
+        // 【MQ缓存清除】事务提交后发送消息，精确删除该分类的菜品缓存
+        afterCommit(() -> {
+            sendDishCacheClearMessage(oldDish.getMerchantId(), oldDish.getCategoryId());
+        });
     }
 
     /**
@@ -257,9 +277,13 @@ public class DishServiceImpl extends ServiceImpl<DishMapper,Dish> implements Dis
                 dishVOList.add(dishVO);
             }
 
-            // 【Redis缓存写入】
-            redisTemplate.opsForValue().set(cacheKey, dishVOList, DISH_CACHE_TTL, TimeUnit.MINUTES);
-            log.info("菜品缓存已写入，key={}, size={}", cacheKey, dishVOList.size());
+            // 【Redis缓存写入】只缓存非空结果，避免空列表被缓存后一直命中空缓存
+            if (dishVOList != null && !dishVOList.isEmpty()) {
+                redisTemplate.opsForValue().set(cacheKey, dishVOList, DISH_CACHE_TTL, TimeUnit.MINUTES);
+                log.info("菜品缓存已写入，key={}, size={}", cacheKey, dishVOList.size());
+            } else {
+                log.info("菜品查询结果为空，不写缓存，key={}", cacheKey);
+            }
 
             return dishVOList;
         } finally {
@@ -277,7 +301,7 @@ public class DishServiceImpl extends ServiceImpl<DishMapper,Dish> implements Dis
             return List.of();
         }
 
-        Integer shopStatus = (Integer) redisTemplate.opsForValue().get(SHOP_STATUS_PREFIX + merchantId);
+        Integer shopStatus = (Integer) redisTemplate.opsForValue().get(RedisStatusConstant.SHOP_STATUS_PREFIX + merchantId);
         if (shopStatus == null || shopStatus == 0) {
             log.warn("商家不存在或已停业，merchantId={}, status={}", merchantId, shopStatus);
             return List.of();
@@ -303,10 +327,6 @@ public class DishServiceImpl extends ServiceImpl<DishMapper,Dish> implements Dis
     public Integer countStatusDish(Integer status) {
         LambdaQueryWrapper<Dish> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(status != null, Dish::getStatus, status);
-        // [TENANT-PLUGIN] 以下手动 merchant_id 过滤已由 TenantLineInnerInterceptor 自动处理，测试通过后删除
-        // if (!AuthContext.isSuperAdmin()) {
-        //     wrapper.eq(Dish::getMerchantId, AuthContext.getCurrentMerchantId());
-        // }
         return Math.toIntExact(count(wrapper));
     }
 
@@ -337,33 +357,51 @@ public class DishServiceImpl extends ServiceImpl<DishMapper,Dish> implements Dis
         return inputMerchantId;
     }
 
-    /**
-     * 查询时自动添加merchantId过滤（非超管）
-     * @param queryWrapper QueryWrapper
-     */
-    // [TENANT-PLUGIN] 此方法已被 TenantLineInnerInterceptor 替代，测试通过后删除整个方法
-    // private void applyMerchantFilter(QueryWrapper<Dish> queryWrapper) {
-    //     if (!AuthContext.isSuperAdmin()) {
-    //         Long currentMerchantId = AuthContext.getCurrentMerchantId();
-    //         if (currentMerchantId != null) {
-    //             queryWrapper.eq("merchant_id", currentMerchantId);
-    //         }
-    //     } else {
-    //         // 超管可指定merchantId过滤（通过DTO传入）
-    //         // 已通过DTO的merchantId字段处理
-    //     }
-    // }
+    private void afterCommit(Runnable task) {
+        TransactionSynchronizationManager.registerSynchronization(
+                new TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        task.run();
+                    }
+                }
+        );
+    }
 
     /**
-     * 清除菜品缓存
-     * @param merchantId 商家ID
-     * @param categoryId 分类ID
+     * 发送菜品缓存清除消息到 MQ（精确到 categoryId，避免误删其他分类缓存）
+     * 消息格式：{ "merchantId": 123, "categoryId": 456 }
+     */
+    private void sendDishCacheClearMessage(Long merchantId, Long categoryId) {
+        if (merchantId == null) {
+            return;
+        }
+        try {
+            Map<String, Object> message = new HashMap<>();
+            message.put("merchantId", merchantId);
+            message.put("categoryId", categoryId);
+
+            rabbitTemplate.convertAndSend(
+                RabbitMQConfig.DISH_CACHE_EXCHANGE,
+                RabbitMQConfig.DISH_CLEAR_KEY,
+                message
+            );
+            log.info("【MQ】已发送菜品缓存清除消息，merchantId={}, categoryId={}", merchantId, categoryId);
+        } catch (Exception e) {
+            log.error("【MQ】发送菜品缓存清除消息失败，merchantId={}, categoryId={}", merchantId, categoryId, e);
+        }
+    }
+
+    /**
+     * 直接清除菜品缓存（备用方法，用于非 MQ 场景）
+     * 精确删除：只删 dishCache::{merchantId}::{categoryId} 这一个 key
      */
     private void clearDishCache(Long merchantId, Long categoryId) {
-        if (merchantId != null && categoryId != null) {
-            String cacheKey = DISH_CACHE_PREFIX + merchantId + "::" + categoryId;
-            Boolean deleted = redisTemplate.delete(cacheKey);
-            log.info("清除菜品缓存，key={}, result={}", cacheKey, deleted);
+        if (merchantId == null) {
+            return;
         }
+        String key = DISH_CACHE_PREFIX + merchantId + "::" + categoryId;
+        Boolean deleted = redisTemplate.delete(key);
+        log.info("直接清除菜品缓存，key={}, result={}", key, deleted);
     }
 }

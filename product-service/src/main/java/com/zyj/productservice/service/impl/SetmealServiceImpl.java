@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.sky.constant.MessageConstant;
+import com.sky.constant.RedisStatusConstant;
 import com.sky.constant.StatusConstant;
 import com.sky.context.AuthContext;
 import com.sky.dto.SetmealDTO;
@@ -18,6 +19,7 @@ import com.sky.exception.SetmealEnableFailedException;
 import com.sky.result.PageResult;
 import com.sky.vo.DishItemVO;
 import com.sky.vo.SetmealVO;
+import com.zyj.productservice.config.RabbitMQConfig;
 import com.zyj.productservice.mapper.DishMapper;
 import com.zyj.productservice.mapper.SetmealDishMapper;
 import com.zyj.productservice.mapper.SetmealMapper;
@@ -26,12 +28,18 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.BeanUtils;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -48,10 +56,10 @@ public class SetmealServiceImpl extends ServiceImpl<SetmealMapper, Setmeal> impl
     private final DishMapper dishMapper;
     private final RedisTemplate redisTemplate;
     private final RedissonClient redissonClient;
+    private final RabbitTemplate rabbitTemplate;
 
     // 缓存key前缀常量
     private static final String SETMEAL_CACHE_PREFIX = "setmealCache:";
-    private static final String SHOP_STATUS_PREFIX = "shop:status:";
     private static final long SETMEAL_CACHE_TTL = 30; // 缓存过期时间（分钟）
 
     /**
@@ -72,8 +80,8 @@ public class SetmealServiceImpl extends ServiceImpl<SetmealMapper, Setmeal> impl
         setmealDishes.forEach(setmealDish -> setmealDish.setSetmealId(setmealId));
         setmealDishMapper.insertBatch(setmealDishes);
 
-        // 【缓存清除】清除对应商家+分类的套餐缓存
-        clearSetmealCache(merchantId, setmealDTO.getCategoryId());
+        // 【MQ缓存清除】事务提交后发送消息，异步清除套餐缓存
+        afterCommit(() -> sendSetmealCacheClearMessage(merchantId, setmealDTO.getCategoryId()));
     }
 
     /**
@@ -87,8 +95,6 @@ public class SetmealServiceImpl extends ServiceImpl<SetmealMapper, Setmeal> impl
         queryWrapper.like(setmealPageQueryDTO.getName() != null, Setmeal::getName, setmealPageQueryDTO.getName())
                 .eq(setmealPageQueryDTO.getCategoryId() != null, Setmeal::getCategoryId, setmealPageQueryDTO.getCategoryId())
                 .eq(setmealPageQueryDTO.getStatus() != null, Setmeal::getStatus, setmealPageQueryDTO.getStatus());
-        // [TENANT-PLUGIN] applyMerchantFilter 已被 TenantLineInnerInterceptor 替代，测试通过后删除
-        // applyMerchantFilter(queryWrapper);
 
         Page<SetmealVO> setmealIPage = setmealMapper.selectPageWithCategory(page, queryWrapper);
         return new PageResult<>(setmealIPage.getTotal(), setmealIPage.getRecords());
@@ -114,10 +120,18 @@ public class SetmealServiceImpl extends ServiceImpl<SetmealMapper, Setmeal> impl
             if (setmeal != null) {
                 setmealMapper.deleteById(setmealId);
                 setmealDishMapper.deleteBySetmealId(setmealId);
-                // 【缓存清除】
-                clearSetmealCache(setmeal.getMerchantId(), setmeal.getCategoryId());
             }
         }
+
+        // 【MQ缓存清除】事务提交后发送消息，异步清除套餐缓存
+        afterCommit(() -> {
+            for (Long id : ids) {
+                Setmeal setmeal = setmealMapper.getById(id);
+                if (setmeal != null) {
+                    sendSetmealCacheClearMessage(setmeal.getMerchantId(), setmeal.getCategoryId());
+                }
+            }
+        });
     }
 
     /**
@@ -160,11 +174,13 @@ public class SetmealServiceImpl extends ServiceImpl<SetmealMapper, Setmeal> impl
         setmealDishes.forEach(setmealDish -> setmealDish.setSetmealId(setmealId));
         setmealDishMapper.insertBatch(setmealDishes);
 
-        // 【缓存清除】清除旧分类和新分类的套餐缓存
-        clearSetmealCache(newMerchantId, oldSetmeal.getCategoryId());
-        if (!oldSetmeal.getCategoryId().equals(setmealDTO.getCategoryId())) {
-            clearSetmealCache(newMerchantId, setmealDTO.getCategoryId());
-        }
+        // 【MQ缓存清除】事务提交后发送消息，异步清除套餐缓存
+        afterCommit(() -> {
+            sendSetmealCacheClearMessage(newMerchantId, oldSetmeal.getCategoryId());
+            if (!oldSetmeal.getCategoryId().equals(setmealDTO.getCategoryId())) {
+                sendSetmealCacheClearMessage(newMerchantId, setmealDTO.getCategoryId());
+            }
+        });
     }
 
     /**
@@ -195,8 +211,8 @@ public class SetmealServiceImpl extends ServiceImpl<SetmealMapper, Setmeal> impl
                 .build();
         setmealMapper.update(setmeal);
 
-        // 【缓存清除】
-        clearSetmealCache(oldSetmeal.getMerchantId(), oldSetmeal.getCategoryId());
+        // 【MQ缓存清除】事务提交后发送消息，异步清除套餐缓存
+        afterCommit(() -> sendSetmealCacheClearMessage(oldSetmeal.getMerchantId(), oldSetmeal.getCategoryId()));
     }
 
     /**
@@ -253,9 +269,13 @@ public class SetmealServiceImpl extends ServiceImpl<SetmealMapper, Setmeal> impl
                 return vo;
             }).collect(Collectors.toList());
 
-            // 【Redis缓存写入】
-            redisTemplate.opsForValue().set(cacheKey, voList, SETMEAL_CACHE_TTL, TimeUnit.MINUTES);
-            log.info("套餐缓存已写入，key={}, size={}", cacheKey, voList.size());
+            // 【Redis缓存写入】只缓存非空结果，避免空列表被缓存后一直命中空缓存
+            if (voList != null && !voList.isEmpty()) {
+                redisTemplate.opsForValue().set(cacheKey, voList, SETMEAL_CACHE_TTL, TimeUnit.MINUTES);
+                log.info("套餐缓存已写入，key={}, size={}", cacheKey, voList.size());
+            } else {
+                log.info("套餐查询结果为空，不写缓存，key={}", cacheKey);
+            }
 
             return voList;
         } finally {
@@ -269,7 +289,7 @@ public class SetmealServiceImpl extends ServiceImpl<SetmealMapper, Setmeal> impl
             return List.of();
         }
 
-        Integer shopStatus = (Integer) redisTemplate.opsForValue().get(SHOP_STATUS_PREFIX + merchantId);
+        Integer shopStatus = (Integer) redisTemplate.opsForValue().get(RedisStatusConstant.SHOP_STATUS_PREFIX + merchantId);
         if (shopStatus == null || shopStatus == 0) {
             log.warn("商家不存在或已停业，merchantId={}, status={}", merchantId, shopStatus);
             return List.of();
@@ -294,10 +314,6 @@ public class SetmealServiceImpl extends ServiceImpl<SetmealMapper, Setmeal> impl
     public Integer countStatusSetmeal(Integer status) {
         LambdaQueryWrapper<Setmeal> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(status != null, Setmeal::getStatus, status);
-        // [TENANT-PLUGIN] 以下手动 merchant_id 过滤已由 TenantLineInnerInterceptor 自动处理，测试通过后删除
-        // if (!AuthContext.isSuperAdmin()) {
-        //     wrapper.eq(Setmeal::getMerchantId, AuthContext.getCurrentMerchantId());
-        // }
         return Math.toIntExact(count(wrapper));
     }
 
@@ -328,26 +344,59 @@ public class SetmealServiceImpl extends ServiceImpl<SetmealMapper, Setmeal> impl
         return inputMerchantId;
     }
 
-    // [TENANT-PLUGIN] 此方法已被 TenantLineInnerInterceptor 替代，测试通过后删除整个方法
-    // private void applyMerchantFilter(LambdaQueryWrapper<Setmeal> queryWrapper) {
-    //     if (!AuthContext.isSuperAdmin()) {
-    //         Long currentMerchantId = AuthContext.getCurrentMerchantId();
-    //         if (currentMerchantId != null) {
-    //             queryWrapper.eq(Setmeal::getMerchantId, currentMerchantId);
-    //         }
-    //     }
-    // }
-
     /**
      * 清除套餐缓存
      * @param merchantId 商家ID
      * @param categoryId 分类ID
      */
     private void clearSetmealCache(Long merchantId, Long categoryId) {
-        if (merchantId != null && categoryId != null) {
-            String cacheKey = SETMEAL_CACHE_PREFIX + merchantId + "::" + categoryId;
-            Boolean deleted = redisTemplate.delete(cacheKey);
-            log.info("清除套餐缓存，key={}, result={}", cacheKey, deleted);
+        if (merchantId == null) {
+            return;
         }
+        // 清除该商家全部套餐缓存（含 categoryId=null 时的 "::null" key，避免脏缓存滞留）
+        String pattern = SETMEAL_CACHE_PREFIX + merchantId + "::*";
+        Set<String> keys = redisTemplate.keys(pattern);
+        if (keys != null && !keys.isEmpty()) {
+            redisTemplate.delete(keys);
+            log.info("清除套餐缓存，pattern={}, count={}", pattern, keys.size());
+        }
+    }
+
+    /**
+     * 发送套餐缓存清除消息到 MQ（学习用：演示 MQ 异步删除缓存）
+     * 消息格式：{ "merchantId": 123, "categoryId": 456 }
+     */
+    private void sendSetmealCacheClearMessage(Long merchantId, Long categoryId) {
+        if (merchantId == null) {
+            return;
+        }
+        try {
+            Map<String, Object> message = new HashMap<>();
+            message.put("merchantId", merchantId);
+            message.put("categoryId", categoryId);
+
+            rabbitTemplate.convertAndSend(
+                RabbitMQConfig.SETMEAL_CACHE_EXCHANGE,
+                RabbitMQConfig.SETMEAL_CLEAR_KEY,
+                message
+            );
+            log.info("【MQ学习】已发送套餐缓存清除消息，merchantId={}, categoryId={}", merchantId, categoryId);
+        } catch (Exception e) {
+            log.error("【MQ学习】发送套餐缓存清除消息失败，merchantId={}, categoryId={}", merchantId, categoryId, e);
+        }
+    }
+
+    /**
+     * 事务提交后执行操作，避免并发读回填旧数据
+     */
+    private void afterCommit(Runnable task) {
+        TransactionSynchronizationManager.registerSynchronization(
+            new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    task.run();
+                }
+            }
+        );
     }
 }

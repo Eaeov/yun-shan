@@ -162,17 +162,19 @@ public class ReportServiceImpl implements ReportService {
             map.put("begin",beginTime);
             //Integer orderCount = orderMapper.countByMap(map);//每天
             Integer orderCount = (Integer) orderClient.countByMap(map).getData();
-            map.put("status", Orders.COMPLETED); //完成的订单
             orderCountList.add(orderCount);
-            validOrderCountList.add(orderCount); // 有效订单数
+
+            map.put("status", Orders.COMPLETED);//完成的订单
+            Integer dailyValidCount = (Integer) orderClient.countByMap(map).getData();  // ← 新变量
+            validOrderCountList.add(dailyValidCount);
         }
 
         return OrderReportVO.builder()
                 .dateList(StringUtils.join(dateList,","))
                 .totalOrderCount(totalOrderCount)
-                .validOrderCount(validOrderCount)
-                .validOrderCountList(StringUtils.join(validOrderCountList,","))
-                .orderCountList(StringUtils.join(orderCountList,","))
+                .validOrderCount(validOrderCount) //有效订单数
+                .validOrderCountList(StringUtils.join(validOrderCountList,",")) //每日有效订单数
+                .orderCountList(StringUtils.join(orderCountList,","))//每日订单数
                 .orderCompletionRate(validOrderCount == 0 ? 0.0 : validOrderCount.doubleValue() / totalOrderCount)//订单完成率
                 .build();
     }
@@ -218,6 +220,9 @@ public class ReportServiceImpl implements ReportService {
         // 调用service方法来获取工作台数据（注意是service而不是mapper，因为这个功能之前实现过，直接拿来用就行）
         BusinessDataVO businessData = workSpaceService.getBusinessData(beginTime, endTime);
         InputStream in = this.getClass().getClassLoader().getResourceAsStream("template/运营数据报表模板.xlsx");
+        if (in == null) {
+            throw new RuntimeException("运营数据报表模板文件不存在: template/运营数据报表模板.xlsx");
+        }
         try {
             XSSFWorkbook excel = new XSSFWorkbook(in);
             XSSFSheet sheet = excel.getSheetAt(0);

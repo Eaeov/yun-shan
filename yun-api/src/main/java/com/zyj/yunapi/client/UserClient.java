@@ -35,6 +35,6 @@ public interface UserClient {
     /**
      * 根据ID查商家详情（超管/老板自己）
      */
-    @GetMapping("/{id}")
+    @GetMapping("/api/merchant/{id}")
     Result<MerchantVO> getMerchantVOById(@PathVariable Long id);
 }

@@ -35,8 +35,6 @@
             <if test="name != null and name != ''"> and d.name like concat('%',#{name},'%') </if>
             <if test="categoryId != null"> and d.category_id = #{categoryId} </if>
             <if test="status != null"> and d.status = #{status} </if>
-            <!-- [TENANT-PLUGIN] 已由 TenantLineInnerInterceptor 自动处理，测试通过后删除 -->
-            <!-- <if test="merchantId != null"> and d.merchant_id = #{merchantId} </if> -->
         </where>
         order by create_time desc
     </select>

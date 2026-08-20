@@ -1,6 +1,7 @@
 package com.zyj.cartservice.service.impl;
 
 import com.sky.constant.MessageConstant;
+import com.sky.constant.RedisStatusConstant;
 import com.sky.context.BaseContext;
 import com.sky.dto.ShoppingCartDTO;
 import com.sky.entity.ShoppingCart;
@@ -39,8 +40,6 @@ public class ShopCartServiceImpl implements ShopCartService {
     private final ProductClient productClient;
     private final RedisTemplate redisTemplate;
 
-    private static final String SHOP_STATUS_PREFIX = "shop:status:";
-
     @Override
     public void addShopCart(ShoppingCartDTO shoppingCartDTO) {
         log.info("添加商品到购物车，参数：{}", shoppingCartDTO);
@@ -52,7 +51,7 @@ public class ShopCartServiceImpl implements ShopCartService {
 
         Long userId = BaseContext.getCurrentId();
 
-        Integer shopStatus = (Integer) redisTemplate.opsForValue().get(SHOP_STATUS_PREFIX + shoppingCartDTO.getMerchantId());
+        Integer shopStatus = (Integer) redisTemplate.opsForValue().get(RedisStatusConstant.SHOP_STATUS_PREFIX + shoppingCartDTO.getMerchantId());
         if (shopStatus == null || shopStatus != 1) {
             log.error("添加购物车失败：商家已打烊，merchantId={}", shoppingCartDTO.getMerchantId());
             throw new ShoppingCartBusinessException("商家已打烊，无法添加商品");

@@ -1,11 +1,14 @@
 package com.zyj.cartservice.controller.admin;
 
+import com.sky.constant.RedisStatusConstant;
 import com.sky.result.Result;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.concurrent.TimeUnit;
 
 /**
  * @Author：zyj
@@ -23,7 +26,6 @@ import org.springframework.web.bind.annotation.*;
 public class ShopController {
 
     // 改为：使用前缀 + 商家ID拼接
-    public static final String SHOP_STATUS_PREFIX = "shop:status:";
 
     private final RedisTemplate redisTemplate ;
 
@@ -36,7 +38,7 @@ public class ShopController {
     public Result<String> setStatus(@PathVariable Long merchantId,
                                     @PathVariable Integer status) {
         log.info("设置商家[{}]店铺状态：{}", merchantId, status == 1 ? "营业中" : "打烊中");
-        redisTemplate.opsForValue().set(SHOP_STATUS_PREFIX + merchantId, status);
+        redisTemplate.opsForValue().set(RedisStatusConstant.SHOP_STATUS_PREFIX + merchantId, status, 24, TimeUnit.HOURS);
         return Result.success();
     }
 
@@ -47,7 +49,7 @@ public class ShopController {
      */
     @GetMapping("/{merchantId}/status")
     public Result<Integer> getStatus(@PathVariable Long merchantId) {
-        Integer status = (Integer) redisTemplate.opsForValue().get(SHOP_STATUS_PREFIX + merchantId);
+        Integer status = (Integer) redisTemplate.opsForValue().get(RedisStatusConstant.SHOP_STATUS_PREFIX + merchantId);
         log.info("获得商家[{}]店铺状态：{}", merchantId, status == 1 ? "营业中" : "打烊中");
         return Result.success(status);
     }

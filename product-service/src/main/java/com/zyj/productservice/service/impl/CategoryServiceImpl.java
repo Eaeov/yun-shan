@@ -24,10 +24,14 @@ import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.BeanUtils;
+import org.springframework.data.redis.core.Cursor;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.ScanOptions;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -73,7 +77,8 @@ public class CategoryServiceImpl extends ServiceImpl<CategoryMapper, Category> i
      * 分页查询（含权限过滤）
      */
     public PageResult pageQuery(CategoryPageQueryDTO categoryPageQueryDTO) {
-        Page<Category> page = new Page<>(categoryPageQueryDTO.getPage(), categoryPageQueryDTO.getPageSize());
+        // searchCount=false：关闭自动 count（分页插件 count 绕过租户过滤），手动 count 修正 total
+        Page<Category> page = new Page<>(categoryPageQueryDTO.getPage(), categoryPageQueryDTO.getPageSize(), false);
         QueryWrapper<Category> queryWrapper = new QueryWrapper<>();
 
         if (categoryPageQueryDTO.getName() != null) {
@@ -82,10 +87,12 @@ public class CategoryServiceImpl extends ServiceImpl<CategoryMapper, Category> i
         if (categoryPageQueryDTO.getType() != null) {
             queryWrapper.eq("type", categoryPageQueryDTO.getType());
         }
-        // [TENANT-PLUGIN] applyMerchantFilter 已被 TenantLineInnerInterceptor 替代，测试通过后删除
-        // applyMerchantFilter(queryWrapper);
+        // 必须加 ORDER BY，否则 MySQL LIMIT 在无排序时返回结果集不确定，page>=2 可能为空
+        queryWrapper.orderByDesc("update_time").orderByAsc("id");
 
         IPage<Category> categoryPage = categoryMapper.selectPage(page, queryWrapper);
+        Long total = categoryMapper.selectCount(queryWrapper); // 走租户过滤链，修正 total
+        categoryPage.setTotal(total == null ? 0 : total);
         return new PageResult(categoryPage.getTotal(), categoryPage.getRecords());
     }
 
@@ -176,13 +183,6 @@ public class CategoryServiceImpl extends ServiceImpl<CategoryMapper, Category> i
         log.info("根据类型查询分类：{}", type);
         LambdaQueryWrapper<Category> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(type != null, Category::getType, type);
-        // [TENANT-PLUGIN] 以下手动 merchant_id 过滤已由 TenantLineInnerInterceptor 自动处理，测试通过后删除
-        // if (!AuthContext.isSuperAdmin()) {
-        //     Long currentMerchantId = AuthContext.getCurrentMerchantId();
-        //     if (currentMerchantId != null) {
-        //         queryWrapper.eq(Category::getMerchantId, currentMerchantId);
-        //     }
-        // }
         return list(queryWrapper);
     }
 
@@ -191,6 +191,13 @@ public class CategoryServiceImpl extends ServiceImpl<CategoryMapper, Category> i
      * key = categoryCache::{merchantId}::{type}
      */
     public List<Category> listWithCache(Long merchantId, Integer type) {
+        if (type == null){
+            LambdaQueryWrapper<Category> queryWrapper = new LambdaQueryWrapper<>();
+            queryWrapper.eq(merchantId != null, Category::getMerchantId, merchantId)
+                    .eq(Category::getStatus, StatusConstant.ENABLE);
+            return list(queryWrapper);
+        }
+
         String cacheKey = CATEGORY_CACHE_PREFIX + merchantId + "::" + type;
         log.info("用户端查询分类列表，key={}", cacheKey);
 
@@ -220,9 +227,13 @@ public class CategoryServiceImpl extends ServiceImpl<CategoryMapper, Category> i
             queryWrapper.eq(Category::getStatus, StatusConstant.ENABLE);
             List<Category> categories = list(queryWrapper);
 
-            // 【Redis缓存写入】
-            redisTemplate.opsForValue().set(cacheKey, categories, CATEGORY_CACHE_TTL, TimeUnit.MINUTES);
-            log.info("分类缓存已写入，key={}, size={}", cacheKey, categories.size());
+            // 【Redis缓存写入】只缓存非空结果，避免空列表被缓存后一直命中空缓存
+            if (categories != null && !categories.isEmpty()) {
+                redisTemplate.opsForValue().set(cacheKey, categories, CATEGORY_CACHE_TTL, TimeUnit.MINUTES);
+                log.info("分类缓存已写入，key={}, size={}", cacheKey, categories.size());
+            } else {
+                log.info("分类查询结果为空，不写缓存，key={}", cacheKey);
+            }
 
             return categories;
         } finally {
@@ -247,16 +258,6 @@ public class CategoryServiceImpl extends ServiceImpl<CategoryMapper, Category> i
         }
         return inputMerchantId;
     }
-
-    // [TENANT-PLUGIN] 此方法已被 TenantLineInnerInterceptor 替代，测试通过后删除整个方法
-    // private void applyMerchantFilter(QueryWrapper<Category> queryWrapper) {
-    //     if (!AuthContext.isSuperAdmin()) {
-    //         Long currentMerchantId = AuthContext.getCurrentMerchantId();
-    //         if (currentMerchantId != null) {
-    //             queryWrapper.eq("merchant_id", currentMerchantId);
-    //         }
-    //     }
-    // }
 
     /**
      * 联合唯一校验：同一商家+同一类型下分类名称不能重复
@@ -285,10 +286,37 @@ public class CategoryServiceImpl extends ServiceImpl<CategoryMapper, Category> i
      * @param type 分类类型
      */
     private void clearCategoryCache(Long merchantId, Integer type) {
-        if (merchantId != null && type != null) {
-            String cacheKey = CATEGORY_CACHE_PREFIX + merchantId + "::" + type;
-            Boolean deleted = redisTemplate.delete(cacheKey);
-            log.info("清除分类缓存，key={}, result={}", cacheKey, deleted);
+        String pattern = CATEGORY_CACHE_PREFIX + merchantId + "::*";
+        Cursor<String> cursor = null;
+        try {
+            cursor = redisTemplate.scan(
+                    ScanOptions.scanOptions()
+                            .match(pattern)
+                            .count(1000)
+                            .build()
+            );
+            List<String> keysToDelete = new ArrayList<>();
+            while (cursor.hasNext()) {
+                String key = cursor.next();
+                keysToDelete.add(key);
+                // 【Redis缓存删除】
+                if (keysToDelete.size() >= 1000) {
+                    redisTemplate.delete(keysToDelete);
+                    log.info("SCAN 删除分类缓存，batch size={}", keysToDelete.size());
+                    keysToDelete.clear();
+                }
+            }
+            // 删除剩余的
+            if (!keysToDelete.isEmpty()) {
+                redisTemplate.delete(keysToDelete);
+                log.info("SCAN 删除分类缓存，final batch size={}", keysToDelete.size());
+            }
+        } catch (Exception e) {
+            log.error("SCAN 删除分类缓存失败，merchantId={}, type={}", merchantId, type, e);
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
         }
     }
-}

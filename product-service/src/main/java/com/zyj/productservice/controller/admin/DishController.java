@@ -101,14 +101,6 @@ public class DishController {
             @RequestParam Long categoryId,
             @RequestParam(required = false) Long merchantId) {
         log.info("根据分类id查询菜品：categoryId={}, merchantId={}", categoryId, merchantId);
-        // [TENANT-PLUGIN] merchant_id 过滤已由 TenantLineInnerInterceptor 自动处理，
-        // 非超管 SQL 层自动追加 WHERE merchant_id = ?，测试通过后删除下方注释代码
-        // if (merchantId == null) {
-        //     merchantId = com.sky.context.AuthContext.getCurrentMerchantId();
-        //     if (merchantId == null) {
-        //         return Result.success(List.of());
-        //     }
-        // }
         List<Dish> list = dishService.getByIdClassify(categoryId, merchantId);
         return Result.success(list);
     }

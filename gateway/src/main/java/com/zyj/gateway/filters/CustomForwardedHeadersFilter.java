@@ -56,8 +56,7 @@ public class CustomForwardedHeadersFilter implements GlobalFilter, Ordered {//�
             "/user/user/login",      // 用户登录
             "/admin/employee/login",  // 员工登录
             "/user/shop/status",       // 店铺营业状态
-             "/ws/**",                  // WebSocket（通过查询参数传 token，@OnOpen 中自行校验）
-            "/api/ai/stream"           // AI接口
+             "/ws/**"                 // WebSocket（通过查询参数传 token，@OnOpen 中自行校验）
     );
 
     /**

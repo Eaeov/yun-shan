@@ -25,6 +25,19 @@
             <artifactId>fastjson2</artifactId>
         </dependency>
 
+        <!--redis：optional，避免 gateway 等不依赖 Redis 的服务传递引入并加载 RedisConfiguration-->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson-spring-boot-starter</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <dependency>
             <groupId>commons-lang</groupId>
             <artifactId>commons-lang</artifactId>
@@ -95,6 +108,8 @@
             <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
             <scope>provided</scope>
         </dependency>
+
+
         <dependency>
             <groupId>com.baomidou</groupId>
             <artifactId>mybatis-plus-jsqlparser</artifactId>

@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.sky.constant.RedisStatusConstant;
 import com.zyj.orderservice.Info.PreOrderInfo;
 import com.sky.constant.MessageConstant;
 import com.sky.context.AuthContext;
@@ -46,7 +47,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
  * 订单业务层实现类
@@ -75,7 +75,6 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Orders> implement
     @Lazy
     private OrderServiceImpl self;
 
-    private static final String SHOP_STATUS_PREFIX = "shop:status:";
 
     /**
      * 预订单相关查询专用线程池
@@ -107,7 +106,7 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Orders> implement
             throw new OrderBusinessException(MessageConstant.MERCHANT_ID_CAN_NOT_BE_EMPTY);
         }
 
-        Integer shopStatus = (Integer) redisTemplate.opsForValue().get(SHOP_STATUS_PREFIX + ordersSubmitDTO.getMerchantId());
+        Integer shopStatus = (Integer) redisTemplate.opsForValue().get(RedisStatusConstant.SHOP_STATUS_PREFIX + ordersSubmitDTO.getMerchantId());
         if (shopStatus == null || shopStatus != 1) {
             throw new OrderBusinessException(MessageConstant.MERCHANT_SHOP_CLOSED);
         }
@@ -480,22 +479,21 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Orders> implement
     public PageResult<OrderVO> pageOrderSearch(OrdersPageQueryDTO ordersPageQueryDTO) {
         log.info("订单搜索：{}", ordersPageQueryDTO);
 
-        // [TENANT-PLUGIN] 以下 setMerchantId 注入已由 TenantLineInnerInterceptor 自动处理，测试通过后删除
-        // if (!AuthContext.isSuperAdmin()) {
-        //     ordersPageQueryDTO.setMerchantId(AuthContext.getCurrentMerchantId());
-        // }
-
-        Page<Orders> page = new Page<>(ordersPageQueryDTO.getPage(), ordersPageQueryDTO.getPageSize());
+        // searchCount=false：关闭自动 count（分页插件 count 绕过租户过滤），手动 count 修正 total
+        Page<Orders> page = new Page<>(ordersPageQueryDTO.getPage(), ordersPageQueryDTO.getPageSize(), false);
         LambdaQueryWrapper<Orders> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(ordersPageQueryDTO.getNumber() != null, Orders::getNumber, ordersPageQueryDTO.getNumber())
                 .eq(ordersPageQueryDTO.getStatus() != null, Orders::getStatus, ordersPageQueryDTO.getStatus())
                 .eq(ordersPageQueryDTO.getPhone() != null, Orders::getPhone, ordersPageQueryDTO.getPhone())
-                // [TENANT-PLUGIN] .eq(merchantId) 已由 TenantLineInnerInterceptor 自动处理，测试通过后删除下行注释
-                // .eq(ordersPageQueryDTO.getMerchantId() != null, Orders::getMerchantId, ordersPageQueryDTO.getMerchantId())
                 .between(ordersPageQueryDTO.getBeginTime() != null && ordersPageQueryDTO.getEndTime() != null,
                         Orders::getOrderTime, ordersPageQueryDTO.getBeginTime(), ordersPageQueryDTO.getEndTime());
 
+        // 必须加 ORDER BY，否则 MySQL LIMIT 在无排序时返回结果集不确定，page>=2 可能为空
+        queryWrapper.orderByDesc(Orders::getOrderTime).orderByAsc(Orders::getId);
         IPage<Orders> ordersIPage = orderMapper.selectPage(page, queryWrapper);
+        // 手动 count：走租户过滤链，修正 total（否则返回全平台订单数）
+        Long total = orderMapper.selectCount(queryWrapper);
+        ordersIPage.setTotal(total == null ? 0 : total);
         List<OrderVO> orderVOList = fillOrderDetailList(ordersIPage.getRecords());
         log.info("订单搜索结果：{}", orderVOList.toString());
         return new PageResult<>(ordersIPage.getTotal(), orderVOList);
@@ -507,19 +505,6 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Orders> implement
      */
     @Override
     public OrderStatisticsVO orderStatistics() {
-        // [TENANT-PLUGIN] merchaht_id 过滤已由 TenantLineInnerInterceptor 自动处理，
-        // 直接使用 countStatus 即可（插件自动追加 WHERE 条件），测试通过后删除下方注释代码
-        // Long merchantId = AuthContext.isSuperAdmin() ? null : AuthContext.getCurrentMerchantId();
-        // if (merchantId != null) {
-        //     toBeConfirmed = orderMapper.countStatusByMerchantId(Orders.TO_BE_CONFIRMED, merchantId);
-        //     confirmed = orderMapper.countStatusByMerchantId(Orders.CONFIRMED, merchantId);
-        //     deliveryInProgress = orderMapper.countStatusByMerchantId(Orders.DELIVERY_IN_PROGRESS, merchantId);
-        // } else {
-        //     toBeConfirmed = orderMapper.countStatus(Orders.TO_BE_CONFIRMED);
-        //     confirmed = orderMapper.countStatus(Orders.CONFIRMED);
-        //     deliveryInProgress = orderMapper.countStatus(Orders.DELIVERY_IN_PROGRESS);
-        // }
-
         Integer toBeConfirmed = orderMapper.countStatus(Orders.TO_BE_CONFIRMED);
         Integer confirmed = orderMapper.countStatus(Orders.CONFIRMED);
         Integer deliveryInProgress = orderMapper.countStatus(Orders.DELIVERY_IN_PROGRESS);
@@ -711,11 +696,6 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Orders> implement
      */
     @Override
     public Double sumByMap(Map<String, Object> map) {
-        // [TENANT-PLUGIN] merchan_id 注入已由 TenantLineInnerInterceptor 自动处理，测试通过后删除
-        // if (!AuthContext.isSuperAdmin()) {
-        //     Object o = map.get("merchantId");
-        //     if (o == null) map.put("merchantId", AuthContext.getCurrentMerchantId());
-        // }
         return orderMapper.sumByMap(map);
     }
 
@@ -725,11 +705,6 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Orders> implement
      */
     @Override
     public Integer countByMap(Map<String, Object> map) {
-        // [TENANT-PLUGIN] merchan_id 注入已由 TenantLineInnerInterceptor 自动处理，测试通过后删除
-        // if (!AuthContext.isSuperAdmin()) {
-        //     Object o = map.get("merchantId");
-        //     if (o == null) map.put("merchantId", AuthContext.getCurrentMerchantId());
-        // }
         return orderMapper.countByMap(map);
     }
 
@@ -745,12 +720,6 @@ public class OrderServiceImpl extends ServiceImpl<OrderMapper, Orders> implement
         Map<String, Object> map = new HashMap<>();
         map.put("begin", begin);
         map.put("end", end);
-
-        // [TENANT-PLUGIN] merchan_id 注入已由 TenantLineInnerInterceptor 自动处理，测试通过后删除
-        // if (!AuthContext.isSuperAdmin()) {
-        //     Object o = map.get("merchantId");
-        //     if (o == null) map.put("merchantId", AuthContext.getCurrentMerchantId());
-        // }
 
         return orderMapper.getSalesTop10(map);
     }

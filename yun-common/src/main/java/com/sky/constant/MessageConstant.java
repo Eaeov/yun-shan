@@ -38,4 +38,5 @@ public class MessageConstant {
     public static final String ORDER_NOT_COMPLETED = "订单未完成，无法评论";
     public static final String NO_COMMODITY_EXISTS = "不存在该商品";
     public static final String ORDER_STATUS_UNDELIVERABLE = "当前订单状态不可催单";
+
 }
